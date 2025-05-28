@@ -2,3 +2,8 @@
 
 In this REU project, we will try to predict conditions near the Earth using HUXt. We will use Parker Solar probe measurements as inner boundary conditions to initialize a solar wind model in HUXt. 
 This github repo contains tutorial notebooks to download data, generate orbits, and run HUXt. 
+
+### Running HUXt
+HUXt has dependencies which are specified in `requirements.txt` and `environment.yml`. Therefore, we use **conda** to create a virtual environment following the recommendations in the HUXt repo. From the root directory of 'HUXt_REU_project', run the following command:
+>>conda env create -f environment.yml
+>>conda activate huxt
