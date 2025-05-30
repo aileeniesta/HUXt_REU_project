@@ -24,4 +24,14 @@ HUXt has dependencies which are specified in `requirements.txt` and `environment
 >>conda activate huxt
 ```
 
+Now, you should be able to run everything in this repo!
+
 #### Notebooks
+
+To start you off, inside the `code` folder we've prepared some starter Jupyter notebooks to get you started. 
+
+`code/data_and_orbits.ipynb`
+
+and 
+
+`code/HUXt_PSP_tutorial.ipynb`
