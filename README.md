@@ -8,6 +8,14 @@ This github repo contains tutorial notebooks to download data, generate orbits, 
 git clone https://github.com/Lyosef789/HUXt_REU_project.git
 ```
 
+### Initializing Submodules 
+
+You will be using a copy of the HUXt software as a submodule. After cloning this main repo you will need to additionally pull the HUXt software with:
+
+```
+git submodule update --init --recursive
+```
+
 #### Running HUXt
 HUXt has dependencies which are specified in `requirements.txt` and `environment.yml`. Therefore, we use **conda** to create a virtual environment following the recommendations in the HUXt repo. From the root directory of 'HUXt_REU_project', run the following commands:
 
