@@ -32,6 +32,13 @@ To start you off, inside the `code` folder we've prepared some starter Jupyter n
 
 `code/data_and_orbits.ipynb`
 
-and 
 
+#### Lidiya has some reference code that may be helpful if you get stuck!
+
+For alternative ways of downloading and plotting the data and orbits in its original format : 
+`code/orbitals_download/Orbital_plotting.ipynb`
+
+For HUXt usage
 `code/HUXt_PSP_tutorial.ipynb`
+
+You'll also find some useful multipurpose code in `/code/orbitals_download/helpers.py`
