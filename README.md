@@ -32,6 +32,9 @@ To start you off, inside the `code` folder we've prepared some starter Jupyter n
 
 `code/data_and_orbits.ipynb`
 
+and 
+
+`code/HUXt_first_steps.ipynb`
 
 #### Lidiya has some reference code that may be helpful if you get stuck!
 
