@@ -82,3 +82,30 @@ def ballistically_project(skycoord,r_inner = 2.5*u.R_sun, vr_arr=None) :
 
 def roll_to_180(lons) : 
     return ((lons + 180) % 360)-180
+
+def get_prograde_df(encounter_number): 
+    """
+    returns a df containing time, longitude, radius, latitude, and radial velocity
+    for the prograde portion of a given PSP encounter.
+    """
+    df = pd.read_csv(f'../data/E{encounter_number:02d}.csv')
+    df.columns = [col.replace('-', '_').replace('—', '_').strip() for col in df.columns]
+    df['Times'] = pd.to_datetime(df['Times'], errors='coerce')
+    df = df.dropna(subset=['Times', 'Vpr_Parker', 'Lon_Parker', 'Lat_Parker', 'R_Parker'])
+
+    # Identify prograde motion and apply longitude filter
+    df['prograde'] = (df['Lon_Parker'].diff() > 0) & (df['Lon_Parker'].diff() < 180)
+    prograde_df = df.loc[df['prograde'] == True]
+
+    # Select and rename relevant columns
+    result = prograde_df[['Times', 'Lon_Parker', 'R_Parker', 'Lat_Parker', 'Vpr_Parker']]
+    result = result.rename(columns={
+        'Times': 'time',
+        'Lon_Parker': 'longitude',
+        'R_Parker': 'radius',
+        'Lat_Parker': 'latitude',
+        'Vpr_Parker': 'Vr'
+    })
+
+    return result
+                                  
