@@ -211,6 +211,107 @@ def get_v_merged_accel(encounter_number: int, v_mas: u.Quantity) -> u.Quantity:
     return merged_vals * u.km/u.s
 
 
+def shade_divergent_regions(ax, diff_thresh=10):
+    """
+    Shade all regions where Vaccel and Vmas differ by more than diff_thresh (km/s).
+    Works even when lines cross over or rejoin.
+    """
+    vacc = next(l for l in ax.get_lines() if l.get_label().startswith('Vaccel'))
+    vmas = next(l for l in ax.get_lines() if l.get_label().startswith('Vmas'))
+
+    x = vacc.get_xdata()
+    y1 = vacc.get_ydata()
+    y2 = vmas.get_ydata()
+
+    if hasattr(x, 'unit'): x = x.value
+    if hasattr(y1, 'unit'): y1 = y1.value
+    if hasattr(y2, 'unit'): y2 = y2.value
+
+    diff = np.abs(y1 - y2)
+    mask = diff > diff_thresh
+
+    # Find continuous chunks using changes in mask
+    in_region = False
+    for i in range(1, len(mask)):
+        if mask[i] and not in_region:
+            # Start of new region
+            start = x[i]
+            in_region = True
+        elif not mask[i] and in_region:
+            # End of region
+            end = x[i]
+            ax.axvspan(start, end, color='gray', alpha=0.1)
+            in_region = False
+
+    # If still in a region at end of array
+    if in_region:
+        ax.axvspan(start, x[-1], color='gray', alpha=0.1)
+
+
+
+
+
+def plot_alignment(df, cr_start, avg_speed_kms, title='PSP–Earth Alignment'):
+
+    """
+    Plot PSP, Sun, and Earth positions in Carrington frame with solar wind lag.
+    Converts PSP radius from solar radii to AU.
+    
+    
+    Returns:
+    - fig, ax, alignment_angle_deg
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    # Constants
+    AU_km = 1.496e8
+    RS_to_AU = 1 / 215.0  # solar radii to AU
+    carr_rate = 360 / 27.2753  # deg/day
+
+    # PSP location (in AU)
+    psp_lon = np.mean(df['longitude']) % 360
+    psp_r = np.mean(df['radius']) * RS_to_AU
+
+    # Lag time from PSP to Earth
+    lag_sec = (1.0 - psp_r) * AU_km / avg_speed_kms
+    lag_days = lag_sec / 86400
+    earth_lon = (lag_days * carr_rate) % 360
+
+    # Convert to Cartesian
+    psp_x = psp_r * np.cos(np.deg2rad(psp_lon))
+    psp_y = psp_r * np.sin(np.deg2rad(psp_lon))
+    earth_x = 1.0 * np.cos(np.deg2rad(earth_lon))
+    earth_y = 1.0 * np.sin(np.deg2rad(earth_lon))
+
+    # Alignment angle
+    delta_lon = (earth_lon - psp_lon + 360) % 360
+    alignment_angle_deg = delta_lon if delta_lon <= 180 else 360 - delta_lon
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.plot(0, 0, 'o', color='gold', label='Sun')
+    ax.plot(psp_x, psp_y, 'o', color='red', label='PSP')
+    ax.plot(earth_x, earth_y, 'o', color='blue', label='Earth (lagged)')
+
+    ax.plot([0, psp_x], [0, psp_y], 'r--', alpha=0.5)
+    ax.plot([0, earth_x], [0, earth_y], 'b--', alpha=0.5)
+
+    ax.set_xlabel('X (AU)')
+    ax.set_ylabel('Y (AU)')
+    ax.set_aspect('equal')
+    ax.legend(loc='upper right')
+    ax.set_title(title)
+    ax.text(0, 1, f'Alignment angle: {alignment_angle_deg:.1f}°', fontsize=10,                               fontweight='bold')
+
+    ax.set_xlim(-0.2, 1.2)
+    ax.set_ylim(-0.2, 1.2)
+    plt.tight_layout()
+
+    return fig, ax, alignment_angle_deg
+
+
+
 def delta_long(r_inner, r_outer, vsw):
     """
     Simple ballistic‐corotation longitude lag (deg) between two radii.
@@ -221,19 +322,49 @@ def delta_long(r_inner, r_outer, vsw):
     return (omega*tof).to_value(u.deg)
 
 
-def rmse(a, b, mask):
-    m = mask & ~np.isnan(a) & ~np.isnan(b)
-    return np.sqrt(np.mean((a[m]-b[m])**2)) if m.any() else np.nan
+def get_time_intervals_from_mask(mask, time_array):
+    """
+    Convert a boolean mask and corresponding time array into a list of (start, end) intervals.
+    Each interval corresponds to a contiguous True region in the mask.
+    """
+    intervals = []
+    in_interval = False
+    for i in range(len(mask)):
+        if mask[i] and not in_interval:
+            start = time_array[i]
+            in_interval = True
+        elif not mask[i] and in_interval:
+            end = time_array[i - 1]
+            intervals.append((start, end))
+            in_interval = False
+    if in_interval:
+        intervals.append((start, time_array[-1]))
+    return intervals
 
-def quick_orbit(df, enc):
-    """Tiny PSP–Earth orbit snapshot."""
-    r2au = 1/215.0
-    r  = df['radius'].astype(float)*r2au
-    th = np.radians(df['longitude'].astype(float))
-    x, y = r*np.cos(th), r*np.sin(th)
-    ang  = np.linspace(0,2*np.pi,400)
-    plt.figure(figsize=(4.5,4.5))
-    plt.plot(np.cos(ang), np.sin(ang), 'b-',  alpha=.2)   # Earth orbit
-    plt.plot(0,0,'yo');  plt.plot(1,0,'bo')
-    plt.plot(x, y,'r-',lw=1.6); plt.plot(x.iloc[0],y.iloc[0],'ro')
-    plt.title(f'Encounter {enc}: PSP (red) & Earth (blue)'); plt.axis('equal'); plt.grid()
+
+def rmse(a, b, times=None, intervals=None):
+    """
+    Compute RMSE between arrays `a` and `b` ONLY within specified `intervals`.
+
+    Parameters:
+    - a, b: arrays to compare
+    - times: array of times (same length as `a` and `b`)
+    - intervals: list of (start, end) time ranges
+
+    Returns:
+    - RMSE value or np.nan if no valid data
+    """
+    import numpy as np
+    a = np.array(a)
+    b = np.array(b)
+
+    if times is None or intervals is None:
+        valid = ~np.isnan(a) & ~np.isnan(b)
+    else:
+        times = np.array(times)
+        mask = np.zeros_like(times, dtype=bool)
+        for start, end in intervals:
+            mask |= (times >= start) & (times <= end)
+        valid = mask & ~np.isnan(a) & ~np.isnan(b)
+
+    return np.sqrt(np.mean((a[valid] - b[valid])**2)) if valid.any() else np.nan
