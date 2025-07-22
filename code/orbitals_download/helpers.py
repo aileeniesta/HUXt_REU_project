@@ -211,104 +211,207 @@ def get_v_merged_accel(encounter_number: int, v_mas: u.Quantity) -> u.Quantity:
     return merged_vals * u.km/u.s
 
 
-def shade_divergent_regions(ax, diff_thresh=10):
+# def shade_divergent_regions(ax, diff_thresh=10):
+#     """
+#     Shade all regions where Vaccel and Vmas differ by more than diff_thresh (km/s).
+#     Works even when lines cross over or rejoin.
+#     """
+#     vacc = next(l for l in ax.get_lines() if l.get_label().startswith('Vaccel'))
+#     vmas = next(l for l in ax.get_lines() if l.get_label().startswith('Vmas'))
+
+#     x = vacc.get_xdata()
+#     y1 = vacc.get_ydata()
+#     y2 = vmas.get_ydata()
+
+#     if hasattr(x, 'unit'): x = x.value
+#     if hasattr(y1, 'unit'): y1 = y1.value
+#     if hasattr(y2, 'unit'): y2 = y2.value
+
+#     diff = np.abs(y1 - y2)
+#     mask = diff > diff_thresh
+
+#     # finds continuous parts using changes in mask
+#     in_region = False
+#     for i in range(1, len(mask)):
+#         if mask[i] and not in_region:
+#             # new region
+#             start = x[i]
+#             in_region = True
+#         elif not mask[i] and in_region:
+#             # end of region
+#             end = x[i]
+#             ax.axvspan(start, end, color='gray', alpha=0.3)
+#             in_region = False
+
+#     # if still in a region at end of array
+#     if in_region:
+#         ax.axvspan(start, x[-1], color='gray', alpha=0.3)
+   
+import numpy as np
+
+def shade_prograde_region(ax, diff_thresh=10, span_days=7, min_day=10):
     """
-    Shade all regions where Vaccel and Vmas differ by more than diff_thresh (km/s).
-    Works even when lines cross over or rejoin.
+    Shade from the first divergence after `min_day` to the last divergence
+    within `span_days` of that point.
     """
+    # grab your two curves
     vacc = next(l for l in ax.get_lines() if l.get_label().startswith('Vaccel'))
     vmas = next(l for l in ax.get_lines() if l.get_label().startswith('Vmas'))
 
-    x = vacc.get_xdata()
-    y1 = vacc.get_ydata()
-    y2 = vmas.get_ydata()
-
-    if hasattr(x, 'unit'): x = x.value
+    # get raw arrays (strip units if needed)
+    x  = vacc.get_xdata();  y1 = vacc.get_ydata();  y2 = vmas.get_ydata()
+    if hasattr(x,  'unit'): x  = x.value
     if hasattr(y1, 'unit'): y1 = y1.value
     if hasattr(y2, 'unit'): y2 = y2.value
 
-    diff = np.abs(y1 - y2)
-    mask = diff > diff_thresh
+    # build divergence mask
+    mask = np.abs(y1 - y2) > diff_thresh
+    # **ignore anything before min_day**
+    mask &= (x >= min_day)
 
-    # Find continuous chunks using changes in mask
-    in_region = False
-    for i in range(1, len(mask)):
-        if mask[i] and not in_region:
-            # Start of new region
-            start = x[i]
-            in_region = True
-        elif not mask[i] and in_region:
-            # End of region
-            end = x[i]
-            ax.axvspan(start, end, color='gray', alpha=0.1)
-            in_region = False
+    idxs = np.where(mask)[0]
+    if idxs.size == 0:
+        return None, None
 
-    # If still in a region at end of array
-    if in_region:
-        ax.axvspan(start, x[-1], color='gray', alpha=0.1)
+    # first True after min_day → x_min
+    x_min = x[idxs[0]]
+
+    # look out span_days → last True in that window → x_max
+    cutoff      = x_min + span_days
+    within_win  = idxs[x[idxs] <= cutoff]
+    x_max = x[within_win[-1]] if within_win.size else x_min
+
+    # shade and return
+    ax.axvspan(x_min, x_max, color='gray', alpha=0.3)
+    return x_min, x_max
+
+import numpy as np
+
+import numpy as np
+
+import numpy as np
+
+import numpy as np
+
+def compute_region_rmse(ax, x_min, x_max):
+    """
+    Compute RMSE of Vaccel, Vmerged, and Vmas vs L1 obs, but only for the
+    time window [x_min, x_max], and only where the L1 data is finite.
+    """
+    # 1) grab lines
+    vacc_line    = next(l for l in ax.get_lines() if l.get_label().startswith('Vaccel'))
+    vmerged_line = next(l for l in ax.get_lines() if l.get_label().startswith('Vmerged'))
+    vmas_line    = next(l for l in ax.get_lines() if l.get_label().startswith('Vmas'))
+    l1_line      = next(l for l in ax.get_lines() if l.get_label().startswith('L1'))
+
+    # 2) pull out arrays
+    x_mod = vacc_line.get_xdata();   y_acc = vacc_line.get_ydata()
+    y_mer = vmerged_line.get_ydata()
+    y_mas = vmas_line.get_ydata()
+    x_l1  = l1_line.get_xdata();     y_l1  = l1_line.get_ydata()
+
+    # 3) strip units if needed
+    if hasattr(x_mod, 'unit'): x_mod = x_mod.value
+    if hasattr(y_acc, 'unit'): y_acc = y_acc.value
+    if hasattr(y_mer, 'unit'): y_mer = y_mer.value
+    if hasattr(y_mas, 'unit'): y_mas = y_mas.value
+    if hasattr(x_l1,  'unit'): x_l1  = x_l1.value
+    if hasattr(y_l1,  'unit'): y_l1  = y_l1.value
+
+    # 4) mask L1 to [x_min, x_max] and finite
+    in_window = (x_l1 >= x_min) & (x_l1 <= x_max)
+    finite_obs = np.isfinite(y_l1)
+    mask_l1 = in_window & finite_obs
+
+    t_l1 = x_l1[mask_l1]
+    v_l1 = y_l1[mask_l1]
+
+    if t_l1.size == 0:
+        # nothing to compare
+        return np.nan, np.nan, np.nan
+
+    # 5) interpolate each model onto the L1 times that survive
+    acc_on_l1 = np.interp(t_l1, x_mod, y_acc)
+    mer_on_l1 = np.interp(t_l1, x_mod, y_mer)
+    mas_on_l1 = np.interp(t_l1, x_mod, y_mas)
+
+    # 6) compute rmse
+    def rmse(a, b):
+        return np.sqrt(np.mean((a - b)**2))
+
+    return (
+        rmse(acc_on_l1, v_l1),
+        rmse(mer_on_l1, v_l1),
+        rmse(mas_on_l1, v_l1),
+    )
 
 
 
 
 
 def plot_alignment(df, cr_start, avg_speed_kms, title='PSP–Earth Alignment'):
-
     """
-    Plot PSP, Sun, and Earth positions in Carrington frame with solar wind lag.
-    Converts PSP radius from solar radii to AU.
-    
-    
-    Returns:
-    - fig, ax, alignment_angle_deg
+    Plot PSP prograde segment and Earth's ¼‑Carrington rotation arc
+    in the Carrington frame, then compute & display the alignment angle.
+    `df` must be the prograde-only DataFrame from hp.get_prograde_df().
     """
     import numpy as np
     import matplotlib.pyplot as plt
 
-    # Constants
-    AU_km = 1.496e8
-    RS_to_AU = 1 / 215.0  # solar radii to AU
-    carr_rate = 360 / 27.2753  # deg/day
+    # constants
+    AU_km     = 1.496e8            # km
+    RS_to_AU  = 1/215.0            # solar radii → AU
+    carr_rate = 360/27.2753        # deg per day
 
-    # PSP location (in AU)
-    psp_lon = np.mean(df['longitude']) % 360
-    psp_r = np.mean(df['radius']) * RS_to_AU
+    # psp prograde segment in AU
+    pro_lons = df['longitude'] % 360
+    pro_rs   = df['radius'] * RS_to_AU
+    pro_x    = pro_rs * np.cos(np.deg2rad(pro_lons))
+    pro_y    = pro_rs * np.sin(np.deg2rad(pro_lons))
 
-    # Lag time from PSP to Earth
-    lag_sec = (1.0 - psp_r) * AU_km / avg_speed_kms
+    # compute Earth's lagged Carrington longitude 
+    mean_r   = pro_rs.mean()
+    lag_sec  = (1.0 - mean_r) * AU_km / avg_speed_kms
     lag_days = lag_sec / 86400
     earth_lon = (lag_days * carr_rate) % 360
 
-    # Convert to Cartesian
-    psp_x = psp_r * np.cos(np.deg2rad(psp_lon))
-    psp_y = psp_r * np.sin(np.deg2rad(psp_lon))
-    earth_x = 1.0 * np.cos(np.deg2rad(earth_lon))
-    earth_y = 1.0 * np.sin(np.deg2rad(earth_lon))
+    # build Earth's ¼‑rotation arc (90°)
+    arc_lons = (earth_lon + np.linspace(0, 90, 200)) % 360
+    arc_x    = np.cos(np.deg2rad(arc_lons))
+    arc_y    = np.sin(np.deg2rad(arc_lons))
 
-    # Alignment angle
-    delta_lon = (earth_lon - psp_lon + 360) % 360
-    alignment_angle_deg = delta_lon if delta_lon <= 180 else 360 - delta_lon
+    # alignment angle between mean PSP lon & earth_lon 
+    mean_psp_lon     = pro_lons.mean()
+    delta            = (earth_lon - mean_psp_lon + 360) % 360
+    alignment_angle  = delta if delta <= 180 else 360 - delta
 
-    # Plot
+    # plotting
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.plot(0, 0, 'o', color='gold', label='Sun')
-    ax.plot(psp_x, psp_y, 'o', color='red', label='PSP')
-    ax.plot(earth_x, earth_y, 'o', color='blue', label='Earth (lagged)')
+    ax.plot(0, 0,                      'o', color='gold', label='Sun')
+    ax.plot(pro_x, pro_y,             lw=2, color='red',  label='PSP prograde')
+    ax.plot(arc_x, arc_y,             lw=2, color='blue', label='Earth ¼‑Carr. rot.')
+    # dashed radial lines (optional)
+    ax.plot([0, pro_x.iloc[0]],       [0, pro_y.iloc[0]],       'r--', alpha=0.5)
+    ax.plot([0, np.cos(np.deg2rad(earth_lon))],
+            [0, np.sin(np.deg2rad(earth_lon))],                  'b--', alpha=0.5)
 
-    ax.plot([0, psp_x], [0, psp_y], 'r--', alpha=0.5)
-    ax.plot([0, earth_x], [0, earth_y], 'b--', alpha=0.5)
-
+    ax.set_aspect('equal')
+    ax.margins(0.27)
+    # ax.set_xlim(-0.5, 1.5)
+    # ax.set_ylim(-0.5, 1.5)
     ax.set_xlabel('X (AU)')
     ax.set_ylabel('Y (AU)')
-    ax.set_aspect('equal')
-    ax.legend(loc='upper right')
     ax.set_title(title)
-    ax.text(0, 1, f'Alignment angle: {alignment_angle_deg:.1f}°', fontsize=10,                               fontweight='bold')
+    ax.legend(loc='upper right')
+    ax.text(0.95, 0.05,
+            f'Alignment angle: {alignment_angle:.1f}°',
+            transform=ax.transAxes,
+            ha='right',va='bottom',
+            fontsize=10, fontweight='bold')
 
-    ax.set_xlim(-0.2, 1.2)
-    ax.set_ylim(-0.2, 1.2)
     plt.tight_layout()
+    return fig, ax, alignment_angle
 
-    return fig, ax, alignment_angle_deg
 
 
 
