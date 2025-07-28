@@ -178,37 +178,104 @@ def get_v_merged(encounter_number: int, v_mas: u.Quantity) -> u.Quantity:
 
     return merged_vals * u.km/u.s
 
-
-
 def get_v_merged_accel(encounter_number: int, v_mas: u.Quantity) -> u.Quantity:
     """
-    Same idea, but starts from the accelerated PSP points.
+    Generate accelerated PSP velocity profile from MAS model,
+    plot original and adjusted PSP points vs all MAS profiles,
+    and save the plot.
     """
+    import os
+    import matplotlib.pyplot as plt
+
     df = get_prograde_df(encounter_number)
 
-    # ---------- create the accelerated list (original code) -----
-    models          = pickle.load(open('../data/the_models_2025-05-01', 'rb'))
-    radii_ro        = models[0][0].to_value(u.solRad)          # radii grid#    
-    vel_profiles    = np.array([v.to_value(u.km/u.s) for v in models[0][2]])
+    # Load MAS model data
+    models = pickle.load(open('../data/the_models_2025-05-01', 'rb'))
+    radii_ro = models[0][0].to_value(u.solRad)                    # Radius grid
+    vel_profiles = np.array([v.to_value(u.km/u.s) for v in models[0][2]])  # Velocity curves
 
     boosted = []
-    for v0, r0 in zip(df['Vr'], df['radius']):
+    r_vals = df['radius'].values
+    v_vals = df['Vr'].values
+
+    for v0, r0 in zip(v_vals, r_vals):
         r_idx = np.argmin(np.abs(radii_ro - r0))
         v_col = vel_profiles[:, r_idx]
         p_idx = np.argmin(np.abs(v_col - v0))
-        v30   = vel_profiles[p_idx, np.argmin(np.abs(radii_ro - 30))]
+        v30  = vel_profiles[p_idx, np.argmin(np.abs(radii_ro - 30))]
         boosted.append(v30)
 
-    interp   = interp1d(df['longitude'], boosted,
-                        kind='linear', bounds_error=False,
-                        fill_value=np.nan)
-    vr_acc   = interp(_LON_GRID)
+    # Interpolate to fill LON_GRID
+    interp = interp1d(df['longitude'], boosted, kind='linear', bounds_error=False, fill_value=np.nan)
+    vr_acc = interp(_LON_GRID)
     merged_vals = np.where(np.isnan(vr_acc), v_mas.value, vr_acc)
 
-    # ---------- wrap‑around patch --------------------------------
+    # Wraparound fix
     merged_vals = _patch_wraparound(df, merged_vals, v_mas)
 
+    # --------- Plotting ---------
+    os.makedirs("huxt_outputs/accel_profiles", exist_ok=True)
+    fig, ax = plt.subplots(figsize=(5, 5))
+
+    # Plot all MAS model velocity profiles
+    for profile in vel_profiles:
+        ax.plot(radii_ro, profile, lw=1, alpha=0.6)
+
+    # Overlay original PSP Vr points
+    ax.scatter(r_vals, v_vals, color='blue', label='Original PSP Vr', zorder=10, s=20)
+
+    # Overlay adjusted points at 30 R☉
+    ax.scatter([30]*len(boosted), boosted, color='maroon', label='Adjusted Vr at 30 R☉', zorder=11, s=20)
+
+    # Vertical line at 30 R☉
+    ax.axvline(x=30, color='black', linestyle='--', lw=1.2)
+
+    ax.set_xlabel("Radius (R☉)")
+    ax.set_ylabel("Vr (km/s)")
+    ax.set_title(f"Accelerated PSP Points – Encounter {encounter_number}")
+    ax.set_xlim(0, 250)
+    ax.set_ylim(0, 800)
+    ax.grid(alpha=0.3)
+    ax.legend()
+    fig.tight_layout()
+    plt.show()
+
+    # Save to disk
+    fig.savefig(f"huxt_outputs/accel_profiles/enc{encounter_number:02d}_accel_profile.png", dpi=300)
+    plt.close(fig)
+
     return merged_vals * u.km/u.s
+
+
+# def get_v_merged_accel(encounter_number: int, v_mas: u.Quantity) -> u.Quantity:
+#     """
+#     Same idea, but starts from the accelerated PSP points.
+#     """
+#     df = get_prograde_df(encounter_number)
+
+#     # ---------- create the accelerated list (original code) -----
+#     models          = pickle.load(open('../data/the_models_2025-05-01', 'rb'))
+#     radii_ro        = models[0][0].to_value(u.solRad)          # radii grid#    
+#     vel_profiles    = np.array([v.to_value(u.km/u.s) for v in models[0][2]])
+
+#     boosted = []
+#     for v0, r0 in zip(df['Vr'], df['radius']):
+#         r_idx = np.argmin(np.abs(radii_ro - r0))
+#         v_col = vel_profiles[:, r_idx]
+#         p_idx = np.argmin(np.abs(v_col - v0))
+#         v30   = vel_profiles[p_idx, np.argmin(np.abs(radii_ro - 30))]
+#         boosted.append(v30)
+
+#     interp   = interp1d(df['longitude'], boosted,
+#                         kind='linear', bounds_error=False,
+#                         fill_value=np.nan)
+#     vr_acc   = interp(_LON_GRID)
+#     merged_vals = np.where(np.isnan(vr_acc), v_mas.value, vr_acc)
+
+#     # ---------- wrap‑around patch --------------------------------
+#     merged_vals = _patch_wraparound(df, merged_vals, v_mas)
+
+#     return merged_vals * u.km/u.s
 
 
 # def shade_divergent_regions(ax, diff_thresh=10):
@@ -285,13 +352,6 @@ def shade_prograde_region(ax, diff_thresh=10, span_days=7, min_day=10):
     ax.axvspan(x_min, x_max, color='gray', alpha=0.3)
     return x_min, x_max
 
-import numpy as np
-
-import numpy as np
-
-import numpy as np
-
-import numpy as np
 
 def compute_region_rmse(ax, x_min, x_max):
     """
@@ -345,72 +405,147 @@ def compute_region_rmse(ax, x_min, x_max):
         rmse(mas_on_l1, v_l1),
     )
 
-
-
-
-
-def plot_alignment(df, cr_start, avg_speed_kms, title='PSP–Earth Alignment'):
-    """
-    Plot PSP prograde segment and Earth's ¼‑Carrington rotation arc
-    in the Carrington frame, then compute & display the alignment angle.
-    `df` must be the prograde-only DataFrame from hp.get_prograde_df().
-    """
+def plot_alignment(df, df_full, title='PSP–Earth Alignment'):
     import numpy as np
     import matplotlib.pyplot as plt
 
-    # constants
-    AU_km     = 1.496e8            # km
-    RS_to_AU  = 1/215.0            # solar radii → AU
-    carr_rate = 360/27.2753        # deg per day
+    RS_to_AU = 1 / 215.0
 
-    # psp prograde segment in AU
-    pro_lons = df['longitude'] % 360
+    # --- PSP midpoint & full segment ---
+    pro_lons = df['longitude']
     pro_rs   = df['radius'] * RS_to_AU
-    pro_x    = pro_rs * np.cos(np.deg2rad(pro_lons))
-    pro_y    = pro_rs * np.sin(np.deg2rad(pro_lons))
 
-    # compute Earth's lagged Carrington longitude 
-    mean_r   = pro_rs.mean()
-    lag_sec  = (1.0 - mean_r) * AU_km / avg_speed_kms
-    lag_days = lag_sec / 86400
-    earth_lon = (lag_days * carr_rate) % 360
+    # faint arc tracing the entire prograde segment:
+    pro_arc_x = pro_rs * np.cos(np.deg2rad(pro_lons))
+    pro_arc_y = pro_rs * np.sin(np.deg2rad(pro_lons))
 
-    # build Earth's ¼‑rotation arc (90°)
-    arc_lons = (earth_lon + np.linspace(0, 90, 200)) % 360
-    arc_x    = np.cos(np.deg2rad(arc_lons))
-    arc_y    = np.sin(np.deg2rad(arc_lons))
+    # midpoint
+    mid_idx = len(df) // 2
+    mid_lon = pro_lons.iloc[mid_idx]
+    mid_r   = pro_rs.iloc[mid_idx]
+    pro_x   = mid_r * np.cos(np.deg2rad(mid_lon))
+    pro_y   = mid_r * np.sin(np.deg2rad(mid_lon))
 
-    # alignment angle between mean PSP lon & earth_lon 
-    mean_psp_lon     = pro_lons.mean()
-    delta            = (earth_lon - mean_psp_lon + 360) % 360
-    alignment_angle  = delta if delta <= 180 else 360 - delta
+    # --- Earth (L1) actual location & 1/4‐Carr arc (unchanged) ---
+    lon_col = [c for c in df_full.columns if 'Lon' in c and 'L1' in c][0]
+    r_col   = [c for c in df_full.columns if c.startswith('R') and 'L1' in c][0]
+    earth_lons = df_full.loc[df.index, lon_col]
+    earth_rs   = df_full.loc[df.index, r_col] * RS_to_AU
+    earth_lon  = earth_lons.mean()
+    earth_r    = earth_rs.mean()
+    arc_center_x = earth_r * np.cos(np.deg2rad(earth_lon))
+    arc_center_y = earth_r * np.sin(np.deg2rad(earth_lon))
+    arc_lons = (earth_lon + np.linspace(-45, 45, 200)) % 360
+    arc_r    = np.full_like(arc_lons, earth_r)
+    arc_x    = arc_r * np.cos(np.deg2rad(arc_lons))
+    arc_y    = arc_r * np.sin(np.deg2rad(arc_lons))
 
-    # plotting
+    # --- Alignment angle (unchanged) ---
+    alignment_angle = earth_lon - mid_lon
+
+    # --- Plotting ---
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.plot(0, 0,                      'o', color='gold', label='Sun')
-    ax.plot(pro_x, pro_y,             lw=2, color='red',  label='PSP prograde')
-    ax.plot(arc_x, arc_y,             lw=2, color='blue', label='Earth ¼‑Carr. rot.')
-    # dashed radial lines (optional)
-    ax.plot([0, pro_x.iloc[0]],       [0, pro_y.iloc[0]],       'r--', alpha=0.5)
-    ax.plot([0, np.cos(np.deg2rad(earth_lon))],
-            [0, np.sin(np.deg2rad(earth_lon))],                  'b--', alpha=0.5)
+    ax.plot(0, 0, 'o', color='gold', label='Sun', markersize=8, zorder=4)
 
-    ax.set_aspect('equal')
-    ax.margins(0.27)
-    # ax.set_xlim(-0.5, 1.5)
-    # ax.set_ylim(-0.5, 1.5)
+    # 1) faint full prograde arc
+    ax.plot(pro_arc_x, pro_arc_y,
+            color='red', lw=1.2, alpha=0.8, label='Prograde segment')
+
+    # 2) solid midpoint on top
+    ax.plot(pro_x, pro_y,
+            'o', color='red', label='PSP midpoint', zorder=5)
+
+    # 3) Earth dot + quarter‐Carr arc
+    ax.plot(arc_center_x, arc_center_y,
+            'o', color='blue', label='Earth (L1)', zorder=5)
+    ax.plot(arc_x, arc_y,
+            color='blue', lw=1.2, alpha=0.8, label='Earth arc')
+
+    # 4) alignment lines
+    ax.plot([0, pro_x],      [0, pro_y],      'r--', alpha=0.6)
+    ax.plot([0, arc_center_x],[0, arc_center_y],'b--', alpha=0.6)
+
+    ax.set_aspect('equal', adjustable='box')
+    ax.set_xlim(-1.3, 1.3)
+    ax.set_ylim(-1.3, 1.3)
     ax.set_xlabel('X (AU)')
     ax.set_ylabel('Y (AU)')
     ax.set_title(title)
     ax.legend(loc='upper right')
+
     ax.text(0.95, 0.05,
             f'Alignment angle: {alignment_angle:.1f}°',
             transform=ax.transAxes,
-            ha='right',va='bottom',
+            ha='right', va='bottom',
             fontsize=10, fontweight='bold')
 
     plt.tight_layout()
     return fig, ax, alignment_angle
+
+
+
+# def plot_alignment(df, cr_start, avg_speed_kms, title='PSP–Earth Alignment'):
+#     """
+#     Plot PSP prograde segment and Earth's ¼‑Carrington rotation arc
+#     in the Carrington frame, then compute & display the alignment angle.
+#     `df` must be the prograde-only DataFrame from hp.get_prograde_df().
+#     """
+#     import numpy as np
+#     import matplotlib.pyplot as plt
+
+#     # constants
+#     AU_km     = 1.496e8           
+#     RS_to_AU  = 1/215.0            
+#     carr_rate = 360/27.2753        # deg per day
+
+#     # psp prograde segment in AU
+#     pro_lons = df['longitude'] % 360
+#     pro_rs   = df['radius'] * RS_to_AU
+#     pro_x    = pro_rs * np.cos(np.deg2rad(pro_lons))
+#     pro_y    = pro_rs * np.sin(np.deg2rad(pro_lons))
+
+#     # compute Earth's lagged Carrington longitude 
+#     mean_r   = pro_rs.mean()
+#     lag_sec  = (1.0 - mean_r) * AU_km / avg_speed_kms
+#     lag_days = lag_sec / 86400
+#     earth_lon = (lag_days * carr_rate) % 360
+
+#     # build Earth's ¼‑rotation arc (90°)
+#     arc_lons = (earth_lon + np.linspace(0, 90, 200)) % 360
+#     arc_x    = np.cos(np.deg2rad(arc_lons))
+#     arc_y    = np.sin(np.deg2rad(arc_lons))
+
+#     # alignment angle between mean PSP lon & earth_lon 
+#     mean_psp_lon     = pro_lons.mean()
+#     delta            = (earth_lon - mean_psp_lon + 360) % 360
+#     alignment_angle  = delta if delta <= 180 else 360 - delta
+
+#     # plotting
+#     fig, ax = plt.subplots(figsize=(6, 6))
+#     ax.plot(0, 0,                      'o', color='gold', label='Sun')
+#     ax.plot(pro_x, pro_y,             lw=2, color='red',  label='PSP prograde')
+#     ax.plot(arc_x, arc_y,             lw=2, color='blue', label='Earth ¼‑Carr. rot.')
+#     # dashed radial lines (optional)
+#     ax.plot([0, pro_x.iloc[0]],       [0, pro_y.iloc[0]],       'r--', alpha=0.5)
+#     ax.plot([0, np.cos(np.deg2rad(earth_lon))],
+#             [0, np.sin(np.deg2rad(earth_lon))],                  'b--', alpha=0.5)
+
+#     ax.set_aspect('equal')
+#     ax.margins(0.27)
+#     # ax.set_xlim(-0.5, 1.5)
+#     # ax.set_ylim(-0.5, 1.5)
+#     ax.set_xlabel('X (AU)')
+#     ax.set_ylabel('Y (AU)')
+#     ax.set_title(title)
+#     ax.legend(loc='upper right')
+#     ax.text(0.95, 0.05,
+#             f'Alignment angle: {alignment_angle:.1f}°',
+#             transform=ax.transAxes,
+#             ha='right',va='bottom',
+#             fontsize=10, fontweight='bold')
+
+#     plt.tight_layout()
+#     return fig, ax, alignment_angle
 
 
 
