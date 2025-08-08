@@ -111,6 +111,9 @@ def get_prograde_df(enc):
                                 'Vpr_Parker':'Vr'})
     return result.reset_index(drop=True)
 
+from astropy.coordinates import get_body_barycentric
+from astropy.time import Time
+import numpy as np
 
 
 from functools        import lru_cache
@@ -118,6 +121,8 @@ from pathlib          import Path
 
 _CR0     = Time('1853-11-09 12:00:00', format='iso', scale='utc')
 _CR_LEN  = 27.2753         # days
+
+
 
 def carrington_info(timestamp):
     """Return (cr_number, cr_start_datetime) for a UTC timestamp."""
@@ -137,6 +142,134 @@ def _rename_columns(df):
     })
 
 
+
+# === helpers.py additions ===
+import numpy as np
+import pandas as pd
+import matplotlib.dates as mdates
+
+# Cached HELIO4CAST ICME catalog
+_HELIO_URL = "https://helioforecast.space/static/sync/icmecat/HELIO4CAST_ICMECAT_v23.csv"
+_CME_CATALOG = None
+
+def load_cme_catalog():
+    """Download & cache the HELIO4CAST ICME catalog with parsed datetimes."""
+    global _CME_CATALOG
+    if _CME_CATALOG is not None:
+        return _CME_CATALOG
+
+    df = pd.read_csv(_HELIO_URL)
+    if "Unnamed: 0" in df.columns:
+        df = df.drop(columns="Unnamed: 0")
+
+    for col in ["icme_start_time", "mo_start_time", "mo_end_time"]:
+        df[col] = pd.to_datetime(df[col], errors="coerce", utc=True)
+
+    df["sc_insitu"] = df["sc_insitu"].astype(str).str.strip()
+    _CME_CATALOG = df
+    return _CME_CATALOG
+
+def get_cme_times_datetime(t_start, t_end, spacecraft="Wind"):
+    """
+    Return a list of ICME start times between t_start and t_end for a given spacecraft.
+    """
+    df = load_cme_catalog()
+    # Ensure datetime comparison is valid
+    mask = (
+        (df["icme_start_time"] >= pd.to_datetime(t_start)) &
+        (df["icme_start_time"] <= pd.to_datetime(t_end)) &
+        (df["sc_insitu"].str.lower() == spacecraft.lower())
+    )
+    return df.loc[mask, "icme_start_time"].to_list()
+
+def carr_days_to_datetime(x_days, cr_start):
+    """Vectorized: days since CR start -> UTC datetime."""
+    t0 = pd.to_datetime(cr_start, utc=True)
+    return t0 + pd.to_timedelta(np.asarray(x_days, dtype=float), unit="D")
+
+
+def convert_axis_days_to_datetime(ax, cr_start):
+    """
+    Convert all line x-data on 'ax' from days-since-CR to UTC datetimes
+    and set date formatting. Call *after* any day-based computations (e.g., RMSE).
+    """
+    for ln in ax.get_lines():
+        x = ln.get_xdata()
+        if len(x) and np.issubdtype(np.asarray(x).dtype, np.number):
+            ln.set_xdata(carr_days_to_datetime(x, cr_start))
+
+    ax.relim(); ax.autoscale_view()
+    loc = mdates.AutoDateLocator()
+    ax.xaxis.set_major_locator(loc)
+    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(loc))
+
+
+def shade_interval_datetime(ax, t0, t1, *, color="0.85", alpha=0.25, label=None, zorder=0):
+    """Generic datetime shading (e.g., re-drawing the prograde window)."""
+    t0 = pd.to_datetime(t0, utc=True)
+    t1 = pd.to_datetime(t1, utc=True)
+    ax.axvspan(t0, t1, color=color, alpha=alpha, label=label, zorder=zorder)
+
+def find_first_divergence_window(x_days_model, v_model,
+                                 x_days_l1,    v_l1,
+                                 start_day=0.0, thresh=20.0, min_hours=6.0):
+    """
+    Return (t_start_days, t_end_days) of the first sustained divergence window
+    where |model - L1| > thresh (km/s) for at least min_hours.
+    Times are in DAYS since CR start.  None if not found.
+    """
+    import numpy as np
+    import pandas as pd
+
+    # L1 -> model grid
+    l1_on_model = np.interp(x_days_model, x_days_l1, v_l1, left=np.nan, right=np.nan)
+    diff = np.abs(v_model - l1_on_model)
+
+    # only after start_day (beginning of the plot)
+    m = np.isfinite(diff) & (x_days_model >= float(start_day))
+    if not np.any(m):
+        return None
+
+    xd = x_days_model[m]
+    dd = diff[m]
+
+    # moving average to enforce persistence
+    if len(xd) < 2:
+        return None
+    dt_days = float(np.median(np.diff(xd)))
+    win = max(1, int(np.ceil((min_hours/24.0) / max(dt_days, 1e-9))))
+    dd_ma = pd.Series(dd).rolling(win, min_periods=1).mean().to_numpy()
+
+    # first time above threshold
+    above = dd_ma > float(thresh)
+    if not np.any(above):
+        return None
+    i0 = np.argmax(above)                           # first True
+    # walk until it drops back below threshold
+    i1 = i0
+    while i1 < len(xd) and above[i1]:
+        i1 += 1
+    return float(xd[i0]), float(xd[min(i1, len(xd)-1)])
+
+
+
+def shade_cmes_datetime(ax, t_min, t_max, *, spacecraft="Wind", catalog=None):
+    """
+    Shade CME intervals on a datetime x-axis using HELIO4CAST catalog.
+    Only intervals overlapping [t_min, t_max] are drawn.
+    """
+    if catalog is None:
+        catalog = load_cme_catalog()
+
+    sub = catalog[catalog["sc_insitu"].str.contains(spacecraft, case=False, na=False)]
+    labeled = False
+    for s, e in sub[["icme_start_time", "mo_end_time"]].itertuples(index=False, name=None):
+        if pd.isna(s) or pd.isna(e):
+            continue
+        if (s <= t_max) and (e >= t_min):
+            ax.axvspan(s, e, color="orange", alpha=0.20,
+                       label=("L1 CME" if not labeled else None), zorder=0)
+            labeled = True
 
 import pickle
 
@@ -225,12 +358,12 @@ def get_v_merged_accel(encounter_number: int, v_mas: u.Quantity) -> u.Quantity:
     ax.scatter(r_vals, v_vals, color='blue', label='Original PSP Vr', zorder=10, s=20)
 
     # Overlay adjusted points at 30 R☉
-    ax.scatter([30]*len(boosted), boosted, color='maroon', label='Adjusted Vr at 30 R☉', zorder=11, s=20)
+    ax.scatter([30]*len(boosted), boosted, color='maroon', label='Adjusted Vr at 30 R($\odot$)',              zorder=11, s=20)
 
     # Vertical line at 30 R☉
     ax.axvline(x=30, color='black', linestyle='--', lw=1.2)
 
-    ax.set_xlabel("Radius (R☉)")
+    ax.set_xlabel("Radius (R$\odot$)")
     ax.set_ylabel("Vr (km/s)")
     ax.set_title(f"Accelerated PSP Points – Encounter {encounter_number}")
     ax.set_xlim(0, 250)
@@ -247,72 +380,6 @@ def get_v_merged_accel(encounter_number: int, v_mas: u.Quantity) -> u.Quantity:
     return merged_vals * u.km/u.s
 
 
-# def get_v_merged_accel(encounter_number: int, v_mas: u.Quantity) -> u.Quantity:
-#     """
-#     Same idea, but starts from the accelerated PSP points.
-#     """
-#     df = get_prograde_df(encounter_number)
-
-#     # ---------- create the accelerated list (original code) -----
-#     models          = pickle.load(open('../data/the_models_2025-05-01', 'rb'))
-#     radii_ro        = models[0][0].to_value(u.solRad)          # radii grid#    
-#     vel_profiles    = np.array([v.to_value(u.km/u.s) for v in models[0][2]])
-
-#     boosted = []
-#     for v0, r0 in zip(df['Vr'], df['radius']):
-#         r_idx = np.argmin(np.abs(radii_ro - r0))
-#         v_col = vel_profiles[:, r_idx]
-#         p_idx = np.argmin(np.abs(v_col - v0))
-#         v30   = vel_profiles[p_idx, np.argmin(np.abs(radii_ro - 30))]
-#         boosted.append(v30)
-
-#     interp   = interp1d(df['longitude'], boosted,
-#                         kind='linear', bounds_error=False,
-#                         fill_value=np.nan)
-#     vr_acc   = interp(_LON_GRID)
-#     merged_vals = np.where(np.isnan(vr_acc), v_mas.value, vr_acc)
-
-#     # ---------- wrap‑around patch --------------------------------
-#     merged_vals = _patch_wraparound(df, merged_vals, v_mas)
-
-#     return merged_vals * u.km/u.s
-
-
-# def shade_divergent_regions(ax, diff_thresh=10):
-#     """
-#     Shade all regions where Vaccel and Vmas differ by more than diff_thresh (km/s).
-#     Works even when lines cross over or rejoin.
-#     """
-#     vacc = next(l for l in ax.get_lines() if l.get_label().startswith('Vaccel'))
-#     vmas = next(l for l in ax.get_lines() if l.get_label().startswith('Vmas'))
-
-#     x = vacc.get_xdata()
-#     y1 = vacc.get_ydata()
-#     y2 = vmas.get_ydata()
-
-#     if hasattr(x, 'unit'): x = x.value
-#     if hasattr(y1, 'unit'): y1 = y1.value
-#     if hasattr(y2, 'unit'): y2 = y2.value
-
-#     diff = np.abs(y1 - y2)
-#     mask = diff > diff_thresh
-
-#     # finds continuous parts using changes in mask
-#     in_region = False
-#     for i in range(1, len(mask)):
-#         if mask[i] and not in_region:
-#             # new region
-#             start = x[i]
-#             in_region = True
-#         elif not mask[i] and in_region:
-#             # end of region
-#             end = x[i]
-#             ax.axvspan(start, end, color='gray', alpha=0.3)
-#             in_region = False
-
-#     # if still in a region at end of array
-#     if in_region:
-#         ax.axvspan(start, x[-1], color='gray', alpha=0.3)
    
 import numpy as np
 
@@ -405,9 +472,12 @@ def compute_region_rmse(ax, x_min, x_max):
         rmse(mas_on_l1, v_l1),
     )
 
+
 def plot_alignment(df, df_full, title='PSP–Earth Alignment'):
     import numpy as np
+    import pandas as pd
     import matplotlib.pyplot as plt
+    from astropy import units as u
 
     RS_to_AU = 1 / 215.0
 
@@ -415,24 +485,36 @@ def plot_alignment(df, df_full, title='PSP–Earth Alignment'):
     pro_lons = df['longitude']
     pro_rs   = df['radius'] * RS_to_AU
 
-    # faint arc tracing the entire prograde segment:
+    # full prograde arc
     pro_arc_x = pro_rs * np.cos(np.deg2rad(pro_lons))
     pro_arc_y = pro_rs * np.sin(np.deg2rad(pro_lons))
 
-    # midpoint
+    # midpoint (PSP)
     mid_idx = len(df) // 2
     mid_lon = pro_lons.iloc[mid_idx]
     mid_r   = pro_rs.iloc[mid_idx]
     pro_x   = mid_r * np.cos(np.deg2rad(mid_lon))
     pro_y   = mid_r * np.sin(np.deg2rad(mid_lon))
 
-    # --- Earth (L1) actual location & 1/4‐Carr arc (unchanged) ---
+    # PSP midpoint date
+    psp_date = pd.to_datetime(df['time'].iloc[mid_idx])
+
+    # --- Earth (L1) ---   
     lon_col = [c for c in df_full.columns if 'Lon' in c and 'L1' in c][0]
     r_col   = [c for c in df_full.columns if c.startswith('R') and 'L1' in c][0]
-    earth_lons = df_full.loc[df.index, lon_col]
-    earth_rs   = df_full.loc[df.index, r_col] * RS_to_AU
-    earth_lon  = earth_lons.mean()
-    earth_r    = earth_rs.mean()
+
+    # Earth longitude/radius at PSP index
+    earth_lon = df_full.loc[df.index[mid_idx], lon_col]
+    earth_r   = df_full.loc[df.index[mid_idx], r_col] * RS_to_AU
+
+    # --- Propagate solar wind travel time (~400 km/s) ---
+    distance_au = abs(earth_r - mid_r)
+    distance_km = (distance_au * u.AU).to(u.km).value
+    travel_time_sec = distance_km / 400.0    # speed = 400 km/s
+
+    earth_date = psp_date + pd.to_timedelta(travel_time_sec, unit='s')
+
+    # Earth arc points
     arc_center_x = earth_r * np.cos(np.deg2rad(earth_lon))
     arc_center_y = earth_r * np.sin(np.deg2rad(earth_lon))
     arc_lons = (earth_lon + np.linspace(-45, 45, 200)) % 360
@@ -440,49 +522,45 @@ def plot_alignment(df, df_full, title='PSP–Earth Alignment'):
     arc_x    = arc_r * np.cos(np.deg2rad(arc_lons))
     arc_y    = arc_r * np.sin(np.deg2rad(arc_lons))
 
-    # --- Alignment angle (unchanged) ---
+    # --- Alignment angle ---
     alignment_angle = earth_lon - mid_lon
 
     # --- Plotting ---
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.plot(0, 0, 'o', color='gold', label='Sun', markersize=8, zorder=4)
 
-    # 1) faint full prograde arc
-    ax.plot(pro_arc_x, pro_arc_y,
-            color='red', lw=1.2, alpha=0.8, label='Prograde segment')
+    # full PSP segment
+    ax.plot(pro_arc_x, pro_arc_y, color='red', lw=1.2, alpha=0.8, label='Prograde segment')
 
-    # 2) solid midpoint on top
-    ax.plot(pro_x, pro_y,
-            'o', color='red', label='PSP midpoint', zorder=5)
+    # PSP midpoint (with date)
+    ax.plot(pro_x, pro_y, 'o', color='red',
+            label=f"PSP midpoint ({psp_date:%Y/%m/%d %H:00})", zorder=5)
 
-    # 3) Earth dot + quarter‐Carr arc
-    ax.plot(arc_center_x, arc_center_y,
-            'o', color='blue', label='Earth (L1)', zorder=5)
-    ax.plot(arc_x, arc_y,
-            color='blue', lw=1.2, alpha=0.8, label='Earth arc')
+    # Earth point + arc (with date)
+    ax.plot(arc_center_x, arc_center_y, 'o', color='blue',
+            label=f"Earth (L1) ({earth_date:%Y/%m/%d %H:00})", zorder=5)
+    ax.plot(arc_x, arc_y, color='blue', lw=1.2, alpha=0.8, label='Earth arc')
 
-    # 4) alignment lines
-    ax.plot([0, pro_x],      [0, pro_y],      'r--', alpha=0.6)
-    ax.plot([0, arc_center_x],[0, arc_center_y],'b--', alpha=0.6)
+    # alignment lines
+    ax.plot([0, pro_x], [0, pro_y], 'r--', alpha=0.6)
+    ax.plot([0, arc_center_x], [0, arc_center_y], 'b--', alpha=0.6)
 
+    # formatting
     ax.set_aspect('equal', adjustable='box')
     ax.set_xlim(-1.3, 1.3)
     ax.set_ylim(-1.3, 1.3)
     ax.set_xlabel('X (AU)')
     ax.set_ylabel('Y (AU)')
     ax.set_title(title)
-    ax.legend(loc='upper right')
+    ax.legend(loc='lower left')
 
-    ax.text(0.95, 0.05,
-            f'Alignment angle: {alignment_angle:.1f}°',
-            transform=ax.transAxes,
-            ha='right', va='bottom',
+    # alignment angle text at top right
+    ax.text(0.95, 0.95, f'Alignment angle: {alignment_angle:.1f}°',
+            transform=ax.transAxes, ha='right', va='top',
             fontsize=10, fontweight='bold')
 
     plt.tight_layout()
     return fig, ax, alignment_angle
-
-
 
 # def plot_alignment(df, cr_start, avg_speed_kms, title='PSP–Earth Alignment'):
 #     """
