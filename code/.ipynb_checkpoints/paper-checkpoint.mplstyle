@@ -1,0 +1,23 @@
+font.family: serif
+mathtext.fontset: cm
+text.usetex: False
+
+font.size: 11
+axes.labelsize: 12
+xtick.labelsize: 11
+ytick.labelsize: 11
+legend.fontsize: 10
+
+axes.linewidth: 1.1
+xtick.direction: in
+ytick.direction: in
+xtick.top: True
+ytick.right: True
+xtick.major.size: 5
+ytick.major.size: 5
+xtick.minor.size: 2.5
+ytick.minor.size: 2.5
+axes.grid: True
+grid.linestyle: --
+grid.alpha: 0.5
+savefig.dpi: 300
